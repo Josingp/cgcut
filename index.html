@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cgcut — CG 리스트 컷 자르기</title>
+<meta name="description" content="CG 리스트 엑셀의 TC를 읽어 원본 영상에서 해당 샷만 잘라내는 실행 파일을 만들어 줍니다.">
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<style>
+:root{
+  --bg:#f6f6f4; --panel:#ffffff; --ink:#1b1b1a; --muted:#6b6a66; --line:#e3e2de;
+  --accent:#2f5bd3; --accent-ink:#ffffff; --warn:#b4540a; --warn-bg:#fff4e8; --ok:#1f7a45; --ok-bg:#eaf6ef;
+  --chip:#efeee9; --code:#f1f0ec; --shadow:0 1px 2px rgba(0,0,0,.04),0 4px 16px rgba(0,0,0,.04);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#141413; --panel:#1d1d1b; --ink:#ecebe7; --muted:#a09f99; --line:#33322f;
+    --accent:#7b9cff; --accent-ink:#0e1530; --warn:#ffb36b; --warn-bg:#3a2717; --ok:#6fd39b; --ok-bg:#16301f;
+    --chip:#2a2a27; --code:#262624; --shadow:none;
+  }
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink)}
+body{font:15px/1.55 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Malgun Gothic","Segoe UI",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1080px;margin:0 auto;padding:28px 16px 80px}
+header{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px}
+h1{font-size:24px;margin:0;letter-spacing:-.01em}
+.sub{color:var(--muted);margin:0 0 22px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 18px;margin:14px 0;box-shadow:var(--shadow)}
+.step{display:flex;gap:10px;align-items:center;margin:0 0 12px;font-weight:650;font-size:16px}
+.num{width:24px;height:24px;border-radius:50%;background:var(--ink);color:var(--panel);display:inline-flex;align-items:center;justify-content:center;font-size:13px;flex:none}
+.drop{border:1.5px dashed var(--line);border-radius:10px;padding:26px 16px;text-align:center;cursor:pointer;transition:border-color .15s,background .15s}
+.drop:hover,.drop.over{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 6%,transparent)}
+.drop strong{display:block;font-size:16px;margin-bottom:4px}
+.muted{color:var(--muted)}
+.small{font-size:13px}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.chip{background:var(--chip);border-radius:999px;padding:4px 11px;font-size:13px}
+.chip.warn{background:var(--warn-bg);color:var(--warn)}
+.chip.ok{background:var(--ok-bg);color:var(--ok)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px 18px}
+label.f{display:flex;flex-direction:column;gap:5px;font-size:13px;color:var(--muted)}
+label.f span.h{color:var(--ink);font-weight:600;font-size:14px}
+input[type=text],input[type=number],select{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;width:100%}
+input:focus,select:focus{outline:2px solid color-mix(in srgb,var(--accent) 45%,transparent);outline-offset:0;border-color:var(--accent)}
+.radios{display:flex;gap:14px;flex-wrap:wrap;color:var(--ink);font-size:14px}
+.sheets{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:14px}
+.btn{font:inherit;font-weight:650;border:0;border-radius:9px;padding:11px 18px;background:var(--accent);color:var(--accent-ink);cursor:pointer}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.ghost{background:var(--chip);color:var(--ink);font-weight:600}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+ol.howto{margin:12px 0 0;padding-left:20px}
+ol.howto li{margin:4px 0}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px}
+code{background:var(--code);padding:1px 6px;border-radius:5px}
+.tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px;margin-top:12px}
+table{border-collapse:collapse;width:100%;font-size:13.5px}
+th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{position:sticky;top:0;background:var(--panel);font-weight:650;white-space:nowrap;font-size:12.5px;color:var(--muted)}
+tr:last-child td{border-bottom:0}
+td.tc{white-space:nowrap}
+td.desc{min-width:220px;max-width:380px;color:var(--muted)}
+td.desc div{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+tr.haswarn td{background:color-mix(in srgb,var(--warn-bg) 70%,transparent)}
+.w{color:var(--warn);font-size:12.5px}
+.vlist{margin:10px 0 0;padding:0;list-style:none;font-size:14px}
+.vlist li{padding:5px 0;border-bottom:1px dashed var(--line);display:flex;gap:10px;flex-wrap:wrap}
+.vlist li:last-child{border-bottom:0}
+.hide{display:none!important}
+.toolbar{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+footer{margin-top:28px;font-size:13px;color:var(--muted)}
+footer a{color:inherit}
+a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header><h1>cgcut</h1><span class="muted">CG 리스트 → 샷 자르기</span></header>
+  <p class="sub">CG 리스트 엑셀을 넣으면 컷 목록과 TC를 확인하고, 원본 영상에서 해당 샷만 잘라내는 실행 파일(.bat)을 만들어 드립니다. 영상은 내 PC에서 처리되어 용량 제한이 없습니다.</p>
+
+  <section class="panel">
+    <div class="step"><span class="num">1</span>CG 리스트 엑셀</div>
+    <div class="drop" id="drop" tabindex="0">
+      <strong id="dropTitle">엑셀 파일을 끌어다 놓거나 클릭해서 선택</strong>
+      <span class="muted small" id="dropSub">.xlsx — 파일은 서버로 올라가지 않고 이 브라우저 안에서만 읽습니다.</span>
+      <input type="file" id="xlsxInput" accept=".xlsx,.xlsm" class="hide">
+    </div>
+    <div class="chips" id="summary"></div>
+  </section>
+
+  <section class="panel hide" id="videoPanel">
+    <div class="step"><span class="num">2</span>원본 영상 <span class="muted small" style="font-weight:400">(선택 — 회차 매칭 미리 확인용, 업로드되지 않음)</span></div>
+    <div class="row">
+      <button class="btn ghost" id="pickVideos">영상 파일 선택</button>
+      <span class="muted small">파일명에 <code>EP04</code>, <code>4화</code>, <code>제4회</code>가 있으면 시트와 자동으로 짝지어집니다. 영상이 1개면 모든 컷에 씁니다.</span>
+      <input type="file" id="videoInput" multiple accept="video/*,.mov,.mxf,.mp4,.mkv" class="hide">
+    </div>
+    <ul class="vlist" id="videoList"></ul>
+    <div class="hide" id="clipsBox" style="margin-top:14px">
+      <label class="f"><span class="h">카메라 원본 폴더 경로</span>
+        이 리스트는 TC 없이 클립명(Scan Name)만 있습니다. 카메라 원본이 있는 폴더 경로를 넣으면 해당 클립 파일을 찾아 모아 줍니다. (예: <code>E:\여대리\원본</code>)
+        <input type="text" id="clipsDir" placeholder="E:\프로젝트\카메라원본">
+      </label>
+    </div>
+  </section>
+
+  <section class="panel hide" id="optPanel">
+    <div class="step"><span class="num">3</span>옵션</div>
+    <div class="grid">
+      <label class="f"><span class="h">출력 형식</span>
+        <select id="codec">
+          <option value="prores">ProRes 422 HQ (.mov) — CG 작업용</option>
+          <option value="prores422">ProRes 422 (.mov)</option>
+          <option value="h264">H.264 (.mp4) — 확인용, 용량 작음</option>
+          <option value="png">PNG 이미지 시퀀스</option>
+          <option value="copy">재인코딩 없음 (빠르지만 앞뒤 몇 프레임 오차)</option>
+        </select>
+      </label>
+      <label class="f"><span class="h">핸들 (앞뒤 여유 프레임)</span>
+        <input type="number" id="handles" min="0" max="240" value="0">
+      </label>
+      <label class="f"><span class="h">영상 첫 프레임 TC</span>
+        비워 두면 파일에 들어 있는 TC를 씁니다
+        <input type="text" id="startTc" placeholder="예: 01:00:00:00">
+      </label>
+      <div class="f"><span class="h">자르는 방식</span>
+        <div class="radios">
+          <label><input type="radio" name="mode" value="shot" checked> 샷 전체 (장면 전환 자동 감지)</label>
+          <label><input type="radio" name="mode" value="fixed"> TC 기준 고정 길이</label>
+        </div>
+        <div class="row hide" id="fixedBox" style="margin-top:6px">
+          <label class="f" style="flex:1">앞 (초)<input type="number" id="before" value="1" step="0.5" min="0"></label>
+          <label class="f" style="flex:1">뒤 (초)<input type="number" id="after" value="5" step="0.5" min="0.1"></label>
+        </div>
+      </div>
+      <label class="f" id="thrBox"><span class="h">장면 전환 감도</span>
+        디졸브·어두운 장면에서 컷을 못 찾으면 낮게
+        <select id="thr">
+          <option value="0.2">민감 (0.2)</option>
+          <option value="0.35" selected>보통 (0.35)</option>
+          <option value="0.5">둔감 (0.5)</option>
+        </select>
+      </label>
+      <label class="f"><span class="h">리스트 프레임레이트</span>
+        경고 표시용 (TC 프레임 값 검사)
+        <select id="fps">
+          <option value="24" selected>23.976 / 24</option>
+          <option value="25">25</option>
+          <option value="30">29.97 / 30</option>
+          <option value="60">59.94 / 60</option>
+        </select>
+      </label>
+    </div>
+    <div style="margin-top:16px">
+      <div class="f"><span class="h" style="font-size:14px;font-weight:600">처리할 시트</span></div>
+      <div class="sheets" id="sheetBoxes" style="margin-top:6px"></div>
+    </div>
+  </section>
+
+  <section class="panel hide" id="runPanel">
+    <div class="step"><span class="num">4</span>실행 파일 받기</div>
+    <div class="row">
+      <button class="btn" id="makeBat">실행 파일(.bat) 받기</button>
+      <span class="muted small" id="batInfo"></span>
+    </div>
+    <ol class="howto small">
+      <li>받은 <b>.bat 파일을 엑셀과 원본 영상이 있는 폴더</b>에 넣고 더블클릭하세요. (영상은 하위 폴더에 있어도 됩니다)</li>
+      <li>결과는 같은 폴더의 <code>cgcut_out</code>에 생기고, 끝나면 폴더가 자동으로 열립니다. 샷별 IN·OUT은 <code>cgcut_report.csv</code>에 정리됩니다.</li>
+      <li>처음 한 번만: <a href="https://www.python.org/downloads/" target="_blank" rel="noopener">파이썬</a> 설치(첫 화면 <b>Add python.exe to PATH</b> 체크) + 명령 프롬프트에서 <code>winget install Gyan.FFmpeg</code></li>
+      <li>브라우저가 ".bat 파일은 위험할 수 있음"이라고 하면 <b>유지</b>를 누르세요. 윈도우가 "PC 보호" 창을 띄우면 <b>추가 정보 → 실행</b>.</li>
+    </ol>
+  </section>
+
+  <section class="panel hide" id="tablePanel">
+    <div class="toolbar">
+      <div class="step" style="margin:0">컷 목록</div>
+      <label class="small"><input type="checkbox" id="onlyWarn"> 경고 있는 컷만</label>
+    </div>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>시트</th><th>No</th><th>EP</th><th>TC IN</th><th>TC OUT</th><th>클립</th><th>내용</th><th>영상</th><th>확인</th></tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>
+    PC에서 직접 쓰기: <a href="cgcut.py" download>cgcut.py</a> · <a href="cgcut_drag.bat" download>cgcut_drag.bat</a> (엑셀+영상을 끌어다 놓는 방식) · <a href="https://github.com/Josingp/cgcut" target="_blank" rel="noopener">GitHub</a>
+  </footer>
+</div>
+
+<script>
+"use strict";
+// ---------------------------------------------------------------- 파싱 (cgcut.py와 같은 규칙)
+const ROLES = {
+  no: ["no","no.","num","#","번호","순번","n","idx"],
+  ep: ["ep","ep.","episode","에피소드","화","ep#","ep no","ep no."],
+  ep_alt: ["회차","회"],
+  tc: ["tc","timecode","time code","tc in","tc_in","tc(in)","in","in tc","타임코드","tc(시작)","시작 tc","start tc","src tc","rec tc"],
+  tc_out: ["tc out","tc_out","tc(out)","out","out tc","종료 tc","끝 tc","end tc"],
+  clip: ["scan name","scanname","scan","clip","clip name","clipname","클립","클립명","reel","source clip","원본 클립","원본클립","파일명","file name","filename"],
+  desc: ["work order","cg description","description","cg 내용","내용","작업 내용","작업내용","요청 사항","요청사항","cg desc","desc"],
+  shot: ["shotname","shot name","shot","샷","샷명","shot no","shot id"],
+  scene: ["s#","scene","sc","씬","scene#","s"],
+  cut: ["c#","cut","컷","cut#","c"],
+};
+const normH = v => String(v ?? "").replace(/\n/g," ").trim().toLowerCase().replace(/\s+/g," ");
+const TC_RE = /(?<![\d.])(\d{1,2})[:;.](\d{2})[:;.](\d{2})(?:([:;.,])(\d{2,3}))?(?!\d)/g;
+function findTCs(text){
+  const out=[];
+  for (const m of String(text||"").matchAll(TC_RE)) out.push({h:+m[1],m:+m[2],s:+m[3],f:m[5]!=null?+m[5]:0,drop:m[4]===";"});
+  return out;
+}
+const p2 = n => String(n).padStart(2,"0");
+const tcStr = t => t ? `${p2(t.h)}:${p2(t.m)}:${p2(t.s)}${t.drop?";":":"}${p2(t.f)}` : "";
+const tcFr = (t,b) => ((t.h*60+t.m)*60+t.s)*b+t.f;
+function epFromName(name){
+  const pats=[/(?<![A-Z0-9])EP\s*[_\-.]?\s*(\d{1,3})(?!\d)/i,/S\d{1,2}\s*E(\d{1,3})(?!\d)/i,/(?<![A-Z0-9])E(\d{2,3})(?![0-9])/i,/제?\s*(\d{1,3})\s*(?:화|회|부)(?!\d)/,/episode\s*(\d{1,3})/i];
+  for (const p of pats){const m=String(name).match(p); if(m) return +m[1];}
+  return null;
+}
+const CLIP_RE=/(?<![A-Z0-9])([A-Z])\s*(\d{2,4})\s*[_\-]?\s*C\s*(\d{2,4})(?!\d)/gi;
+function clipTokens(text){
+  text=String(text||""); const ms=[...text.matchAll(CLIP_RE)], out=[], skip=new Set();
+  ms.forEach((m,i)=>{
+    if(skip.has(i)) return;
+    const roll=m[1].toUpperCase()+m[2], clip=+m[3]; let toks=[roll+"C"+m[3]];
+    const n=ms[i+1];
+    if(n){
+      const between=text.slice(m.index+m[0].length,n.index);
+      if((n[1].toUpperCase()+n[2])===roll && /^\s*[~\-–—]\s*$/.test(between) && +n[3]>clip && +n[3]-clip<=50){
+        toks=[]; for(let c=clip;c<=+n[3];c++) toks.push(roll+"C"+String(c).padStart(m[3].length,"0")); skip.add(i+1);
+      }
+    }
+    toks.forEach(t=>{ if(!out.includes(t)) out.push(t); });
+  });
+  return out;
+}
+const cellText = v => v==null ? "" : String(v);
+
+function detectHeader(rows){
+  let best=[0,null,{}];
+  for(let r=0;r<Math.min(rows.length,40);r++){
+    const roles={}; const row=rows[r]||[];
+    for(let c=0;c<Math.min(row.length,60);c++){
+      const h=normH(row[c]); if(!h) continue;
+      for(const [role,names] of Object.entries(ROLES)){ if(names.includes(h) && !(role in roles)){ roles[role]=c; break; } }
+    }
+    const score=Object.keys(roles).length+("tc" in roles?3:0)+("clip" in roles?2:0);
+    if(("tc" in roles||"clip" in roles) && score>best[0]) best=[score,r,roles];
+  }
+  const [,row,roles]=best;
+  if(row==null) return [null,{}];
+  if(!("ep" in roles) && "ep_alt" in roles) roles.ep=roles.ep_alt;
+  delete roles.ep_alt;
+  return [row,roles];
+}
+function guessTcCol(rows){
+  const cnt={};
+  rows.slice(0,2000).forEach(row=>(row||[]).forEach((v,c)=>{ if(typeof v==="string" && /\d{1,2}[:;.]\d{2}[:;.]\d{2}[:;.,]\d{2,3}/.test(v)) cnt[c]=(cnt[c]||0)+1; }));
+  const e=Object.entries(cnt).sort((a,b)=>b[1]-a[1])[0];
+  return e?+e[0]:null;
+}
+function parseWorkbook(wb){
+  const shots=[], sheets=[];
+  wb.SheetNames.forEach((name,i)=>{
+    const meta=(wb.Workbook&&wb.Workbook.Sheets&&wb.Workbook.Sheets[i])||{};
+    if(meta.Hidden) return;
+    const ws=wb.Sheets[name]; if(!ws||!ws["!ref"]) return;
+    const r0=XLSX.utils.decode_range(ws["!ref"]).s.r;
+    const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:null,raw:false,blankrows:true});
+    let [hdr,roles]=detectHeader(rows), guessed=false;
+    if(hdr==null){ const c=guessTcCol(rows); if(c==null) return; roles={tc:c}; hdr=-1; guessed=true; }
+    const sheetEp=epFromName(name); let n=0;
+    for(let r=hdr+1;r<rows.length;r++){
+      const row=rows[r]||[]; const g=k=>k in roles?cellText(row[roles[k]]):"";
+      const tcRaw=g("tc"), outRaw=g("tc_out"), clipRaw=g("clip"), no=g("no").trim();
+      if(!(tcRaw.trim()||clipRaw.trim()||no)) continue;
+      let ep=null; if("ep" in roles){ const m=g("ep").match(/(\d{1,3})/); if(m) ep=+m[1]; }
+      if(ep==null) ep=sheetEp;
+      const tcs=findTCs(tcRaw), tcIn=tcs[0]||null, tcOut=tcs[1]||(outRaw?findTCs(outRaw)[0]||null:null);
+      if(guessed && !tcIn) continue;
+      shots.push({sheet:name,row:r+r0+1,no,ep,tcIn,tcOut,tcRaw:tcRaw.trim(),clips:clipTokens(clipRaw),clipRaw:clipRaw.trim(),desc:g("desc").trim(),warn:[]});
+      n++;
+    }
+    if(n) sheets.push(name);
+  });
+  return {shots,sheets};
+}
+function addWarnings(shots,base){
+  const bySheet={};
+  shots.forEach(s=>(bySheet[s.sheet]=bySheet[s.sheet]||[]).push(s));
+  const clipOnly=shots.every(s=>!s.tcIn);
+  for(const list of Object.values(bySheet)){
+    const hours={}; list.forEach(s=>{ if(s.tcIn) hours[s.tcIn.h]=(hours[s.tcIn.h]||0)+1; });
+    const top=Object.entries(hours).sort((a,b)=>b[1]-a[1])[0];
+    const seen={};
+    list.forEach(s=>{
+      s.warn=[];
+      if(!s.tcIn && !s.clips.length){ s.warn.push(clipOnly?"클립명 없음 — 건너뜀":"TC 없음 — 건너뜀"); return; }
+      if(!s.tcIn) return;
+      if(top && list.filter(x=>x.tcIn).length>=3 && s.tcIn.h!=+top[0] && top[1]>=2) s.warn.push(`시(hour)가 다른 컷(${p2(top[0])}시)과 다름 — 오타?`);
+      if(s.tcIn.f>=base || (s.tcOut&&s.tcOut.f>=base)) s.warn.push(`프레임 값이 ${base}fps 범위를 넘음`);
+      if(s.tcIn.m>59||s.tcIn.s>59) s.warn.push("분/초 값이 60 이상");
+      if(s.tcOut && tcFr(s.tcOut,base)<tcFr(s.tcIn,base)) s.warn.push("OUT이 IN보다 앞섬");
+      const k=tcStr(s.tcIn); if(seen[k]) s.warn.push(`같은 TC가 no.${seen[k]}에도 있음`); else seen[k]=s.no||("r"+s.row);
+    });
+  }
+}
+
+// ---------------------------------------------------------------- 상태
+const $=id=>document.getElementById(id);
+const state={file:null,shots:[],sheets:[],videos:[]};
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function videoFor(s){
+  const v=state.videos; if(!v.length) return null;
+  if(v.length===1) return v[0];
+  return v.find(n=>epFromName(n.replace(/\.[^.]+$/,""))===s.ep)||false;
+}
+function render(){
+  const {shots}=state, base=+$("fps").value;
+  addWarnings(shots,base);
+  const nTc=shots.filter(s=>s.tcIn).length, nRange=shots.filter(s=>s.tcOut).length, nClip=shots.filter(s=>s.clips.length).length;
+  const nWarn=shots.filter(s=>s.warn.length).length;
+  const chips=[`시트 ${state.sheets.length}개`,`컷 ${shots.length}개`];
+  if(nTc) chips.push(`TC ${nTc}개`); if(nRange) chips.push(`범위(IN~OUT) ${nRange}개`); if(nClip) chips.push(`클립명 ${nClip}개`);
+  $("summary").innerHTML=chips.map(c=>`<span class="chip">${esc(c)}</span>`).join("")+
+    (nWarn?`<span class="chip warn">확인 필요 ${nWarn}개</span>`:`<span class="chip ok">경고 없음</span>`);
+  // 영상 매칭
+  const vl=$("videoList");
+  if(state.videos.length){
+    const eps=[...new Set(shots.filter(s=>s.tcIn).map(s=>s.ep))];
+    const lines=state.videos.map(n=>{ const ep=state.videos.length===1?"전체":(epFromName(n.replace(/\.[^.]+$/,""))!=null?"EP"+p2(epFromName(n.replace(/\.[^.]+$/,""))):"회차 인식 안 됨"); return `<li><b class="mono">${esc(n)}</b><span class="muted">→ ${esc(ep)}</span></li>`; });
+    const missing=state.videos.length>1?eps.filter(ep=>!state.videos.some(n=>epFromName(n.replace(/\.[^.]+$/,""))===ep)):[];
+    if(missing.length) lines.push(`<li class="w">영상 없는 회차: ${missing.map(e=>e==null?"?":"EP"+p2(e)).join(", ")} — 이 회차 컷은 건너뜁니다</li>`);
+    vl.innerHTML=lines.join("");
+  } else vl.innerHTML="";
+  $("clipsBox").classList.toggle("hide", !(nTc===0 && nClip>0));
+  // 시트 체크박스(처음 한 번)
+  const sb=$("sheetBoxes");
+  if(!sb.dataset.file || sb.dataset.file!==state.file.name){
+    sb.dataset.file=state.file.name;
+    sb.innerHTML=state.sheets.map(n=>{ const c=shots.filter(s=>s.sheet===n).length; return `<label><input type="checkbox" class="sheetChk" value="${esc(n)}" checked> ${esc(n)} <span class="muted">(${c})</span></label>`; }).join("");
+  }
+  // 표
+  const only=$("onlyWarn").checked;
+  $("tbody").innerHTML=shots.filter(s=>!only||s.warn.length).map(s=>{
+    const v=videoFor(s); let vtxt="";
+    if(s.tcIn && v===false){ vtxt=`<span class="w">없음</span>`; }
+    else if(v) vtxt=`<span class="mono small">${esc(v)}</span>`;
+    return `<tr class="${s.warn.length?"haswarn":""}"><td>${esc(s.sheet)}</td><td>${esc(s.no)}</td><td>${s.ep??""}</td>
+      <td class="tc mono">${esc(tcStr(s.tcIn))}</td><td class="tc mono">${esc(tcStr(s.tcOut))}</td>
+      <td class="mono small">${esc(s.clips.join(", "))}</td><td class="desc"><div>${esc(s.desc)}</div></td><td>${vtxt}</td>
+      <td class="w">${s.warn.map(esc).join("<br>")}</td></tr>`;
+  }).join("");
+  ["videoPanel","optPanel","runPanel","tablePanel"].forEach(id=>$(id).classList.remove("hide"));
+  updateBatInfo();
+}
+function updateBatInfo(){
+  const sel=[...document.querySelectorAll(".sheetChk:checked")].map(x=>x.value);
+  const n=state.shots.filter(s=>sel.includes(s.sheet)&&(s.tcIn||s.clips.length)).length;
+  const clipOnly=state.shots.every(s=>!s.tcIn);
+  $("batInfo").textContent=`컷 ${n}개 처리` + (clipOnly?" (클립 모으기)":"");
+  $("makeBat").disabled = n===0 || (clipOnly && !$("clipsDir").value.trim());
+}
+
+// ---------------------------------------------------------------- .bat 생성
+function batQ(s){ return String(s).replace(/%/g,"%%"); }
+function makeBat(){
+  const xlsx=state.file.name;
+  const site=/^https?:/.test(location.protocol)?location.origin+location.pathname.replace(/[^/]*$/,""):"";
+  const sel=[...document.querySelectorAll(".sheetChk:checked")].map(x=>x.value);
+  const args=[];
+  if(sel.length!==state.sheets.length) sel.forEach(n=>args.push(`--sheet "${batQ(n)}"`));
+  const clipOnly=state.shots.every(s=>!s.tcIn);
+  if(clipOnly){
+    args.push(`--clips-dir "${batQ($("clipsDir").value.trim().replace(/\\+$/,""))}"`);
+  } else {
+    if(state.videos.length) state.videos.forEach(v=>args.push(`--video "%~dp0${batQ(v)}"`));
+    else args.push(`--video-dir "%~dp0."`);
+    args.push(`--codec ${$("codec").value}`);
+    const h=parseInt($("handles").value,10)||0; if(h>0) args.push(`--handles ${h}`);
+    const mode=document.querySelector("input[name=mode]:checked").value;
+    if(mode==="fixed") args.push(`--mode fixed --before ${+$("before").value||0} --after ${+$("after").value||1}`);
+    else if($("thr").value!=="0.35") args.push(`--scene-threshold ${$("thr").value}`);
+    const st=$("startTc").value.trim(); if(st) args.push(`--start-tc ${findTCs(st).length?tcStr(findTCs(st)[0]):st}`);
+  }
+  const L=[
+    "@echo off","chcp 65001 >nul","setlocal","cd /d \"%~dp0\"","title cgcut",
+    `REM cgcut 실행 파일 — ${new Date().toLocaleString("ko-KR")} 생성`,
+    `REM 리스트: ${batQ(xlsx)}`,
+    "",
+    `if not exist "%~dp0${batQ(xlsx)}" (`,
+    `  echo [오류] 이 파일을 "${batQ(xlsx)}" 와 같은 폴더에 넣고 실행하세요.`,
+    "  pause & exit /b 1",
+    ")",
+    "",
+    "set \"PY=\"",
+    "where py >nul 2>nul && set \"PY=py -3\"",
+    "if not defined PY where python >nul 2>nul && set \"PY=python\"",
+    "if not defined PY (",
+    "  echo [오류] 파이썬이 없습니다. https://www.python.org/downloads/ 에서 설치하세요. 설치 첫 화면에서 Add python.exe to PATH 체크.",
+    "  start \"\" https://www.python.org/downloads/",
+    "  pause & exit /b 1",
+    ")",
+    "where ffmpeg >nul 2>nul",
+    "if errorlevel 1 (",
+    "  echo ffmpeg가 없어 설치합니다. 설치가 끝나면 이 창을 닫고 다시 실행하세요.",
+    "  winget install -e --id Gyan.FFmpeg --accept-source-agreements --accept-package-agreements",
+    "  pause & exit /b 1",
+    ")",
+    "%PY% -c \"import openpyxl\" >nul 2>nul || %PY% -m pip install --quiet openpyxl",
+    "",
+  ];
+  if(site){
+    L.push(
+      "echo 최신 cgcut.py 받는 중...",
+      `curl -fsSL -o "%~dp0cgcut.py.new" "${site}cgcut.py" && move /y "%~dp0cgcut.py.new" "%~dp0cgcut.py" >nul`,
+      "if exist \"%~dp0cgcut.py.new\" del \"%~dp0cgcut.py.new\"",
+    );
+  }
+  L.push(
+    "if not exist \"%~dp0cgcut.py\" (",
+    `  echo [오류] cgcut.py가 없습니다. 인터넷 연결을 확인하거나 ${site?site+"cgcut.py":"GitHub"} 에서 받아 이 폴더에 넣으세요.`,
+    "  pause & exit /b 1",
+    ")",
+    "",
+    `%PY% "%~dp0cgcut.py" "%~dp0${batQ(xlsx)}" -o "%~dp0cgcut_out" ${args.join(" ")}`,
+    "echo.",
+    "if exist \"%~dp0cgcut_out\" start \"\" \"%~dp0cgcut_out\"",
+    "pause",
+  );
+  const text=L.join("\r\n")+"\r\n";
+  const blob=new Blob([text],{type:"application/octet-stream"});
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(blob);
+  a.download=`cgcut_${xlsx.replace(/\.[^.]+$/,"").replace(/[\\/:*?"<>|]/g,"_")}.bat`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+}
+
+// ---------------------------------------------------------------- 이벤트
+async function loadFile(f){
+  if(!f) return;
+  if(!/\.xls[xm]$/i.test(f.name)){ $("dropSub").textContent="엑셀(.xlsx) 파일만 됩니다."; return; }
+  if(typeof XLSX==="undefined"){ $("dropSub").textContent="엑셀 읽기 모듈을 불러오지 못했습니다. 인터넷 연결 후 새로고침하세요."; return; }
+  const wb=XLSX.read(await f.arrayBuffer(),{type:"array"});
+  const {shots,sheets}=parseWorkbook(wb);
+  $("dropTitle").textContent=f.name;
+  if(!shots.length){ $("dropSub").textContent="TC나 클립명(Scan Name) 열을 찾지 못했습니다. 헤더에 'TC' 또는 'Scan Name'이 있는지 확인하세요."; $("summary").innerHTML=""; return; }
+  $("dropSub").textContent="다른 파일로 바꾸려면 다시 끌어다 놓으세요.";
+  Object.assign(state,{file:f,shots,sheets});
+  render();
+}
+const drop=$("drop");
+drop.addEventListener("click",()=>$("xlsxInput").click());
+drop.addEventListener("keydown",e=>{ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); $("xlsxInput").click(); }});
+$("xlsxInput").addEventListener("change",e=>loadFile(e.target.files[0]));
+["dragenter","dragover"].forEach(t=>drop.addEventListener(t,e=>{e.preventDefault();drop.classList.add("over");}));
+["dragleave","drop"].forEach(t=>drop.addEventListener(t,e=>{e.preventDefault();drop.classList.remove("over");}));
+drop.addEventListener("drop",e=>loadFile([...e.dataTransfer.files].find(f=>/\.xls[xm]$/i.test(f.name))||e.dataTransfer.files[0]));
+window.addEventListener("dragover",e=>e.preventDefault()); window.addEventListener("drop",e=>e.preventDefault());
+$("pickVideos").addEventListener("click",()=>$("videoInput").click());
+$("videoInput").addEventListener("change",e=>{ state.videos=[...e.target.files].map(f=>f.name); render(); });
+$("onlyWarn").addEventListener("change",render);
+$("fps").addEventListener("change",render);
+$("clipsDir").addEventListener("input",updateBatInfo);
+document.addEventListener("change",e=>{ if(e.target.classList.contains("sheetChk")) updateBatInfo(); });
+document.querySelectorAll("input[name=mode]").forEach(r=>r.addEventListener("change",()=>{
+  const fixed=document.querySelector("input[name=mode]:checked").value==="fixed";
+  $("fixedBox").classList.toggle("hide",!fixed); $("thrBox").classList.toggle("hide",fixed);
+}));
+$("makeBat").addEventListener("click",makeBat);
+</script>
+</body>
+</html>

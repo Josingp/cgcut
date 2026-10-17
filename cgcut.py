@@ -629,7 +629,16 @@ def run_cut(ffmpeg: str, p: CutPlan, codec: str, start_frames: int, frame_start:
 # ---------------------------------------------------------------------------
 # 영상 파일 찾기 / 클립 복사
 # ---------------------------------------------------------------------------
+def _under(p: Path, d: Path) -> bool:
+    try:
+        p.resolve().relative_to(d.resolve())
+        return True
+    except ValueError:
+        return False
+
+
 def collect_videos(args) -> list[Path]:
+    out_dir = Path(args.out)
     files: list[Path] = []
     for v in args.video or []:
         pth = Path(v)
@@ -648,6 +657,8 @@ def collect_videos(args) -> list[Path]:
     out: list[Path] = []
     for f in files:
         rf = f.resolve()
+        if _under(rf, out_dir):  # 이전 실행 결과물은 원본으로 쓰지 않음
+            continue
         if rf not in seen:
             seen.add(rf)
             out.append(f)

@@ -247,3 +247,17 @@ def test_drop_mode(sample_dir: Path, tmp_path: Path):
     sh.copy(sample_dir / "CG_list_sample.xlsx", d / "list.xlsx")
     assert cgcut.main(["--drop", str(d / "list.xlsx"), str(sample_dir / "EP01_sample.mov"), "--codec", "h264", "--sheet", "EP01"]) == 0
     assert len(list((d / "cgcut_out").glob("EP01_*.mp4"))) == 6
+
+
+@pytest.mark.skipif(not HAVE_FFMPEG, reason="ffmpeg 없음")
+def test_video_dir_skips_previous_output(sample_dir: Path, tmp_path: Path):
+    """--video-dir 안에 cgcut_out이 있어도 결과물을 원본으로 읽지 않음 (bat로 같은 폴더에서 두 번 실행)."""
+    import shutil as sh
+    d = tmp_path / "proj"
+    d.mkdir()
+    sh.copy(sample_dir / "CG_list_sample.xlsx", d / "list.xlsx")
+    sh.copy(sample_dir / "EP01_sample.mov", d / "EP01_sample.mov")
+    args = [str(d / "list.xlsx"), "--video-dir", str(d), "-o", str(d / "cgcut_out"), "--sheet", "EP01", "--codec", "h264"]
+    assert cgcut.main(args) == 0
+    assert cgcut.main(args) == 0
+    assert len(list((d / "cgcut_out").glob("*.mp4"))) == 6
