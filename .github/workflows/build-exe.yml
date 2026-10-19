@@ -77,7 +77,7 @@ jobs:
           # --windowed exe는 터미널에서 바로 분리되므로 끝날 때까지 기다린다
           $p = Start-Process -FilePath (Resolve-Path dist/cgcut.exe) -ArgumentList @("exe_sample/CG_list_sample.xlsx", "--video", "exe_sample/EP01_sample.mov", "-o", "exe_out", "--codec", "h264", "--sheet", "EP01") -Wait -PassThru -RedirectStandardOutput exe.out.log -RedirectStandardError exe.err.log
           "exit code: $($p.ExitCode)" | Tee-Object exe.log
-          Get-Content exe.out.log, exe.err.log | Tee-Object -Append exe.log
+          Get-Content exe.out.log, exe.err.log -ErrorAction SilentlyContinue | Tee-Object -Append exe.log
           $n = (Get-ChildItem exe_out -Filter *.mp4 -ErrorAction SilentlyContinue).Count
           "exe outputs: $n" | Tee-Object -Append exe.log
           if ($n -ne 6) { exit 1 }

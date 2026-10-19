@@ -30,7 +30,7 @@ def main() -> int:
     app.out_var.set(str(work / "out_tc"))
     app.tc_text.insert("1.0", "01:00:02:00\n창문 01:00:08:08 ~ 01:00:09:00\n")
     app.codec_var.set(cgcut_gui.CODECS[2][0])  # h264
-    app.handles_var.set("6")
+    app.handles_var.set("0")
     app.open_out = lambda: None  # 폴더 창 열지 않기
     app.start()
     t = time.time()

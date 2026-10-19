@@ -720,18 +720,21 @@ def run_cut(ffmpeg: str, p: CutPlan, codec: str, start_frames: int, frame_start:
     base = info.tc_fps
     n = p.n_frames
     t_in = max(0.0, (p.in_frame - 0.5) / fps)  # 반 프레임 앞에서 찾기 시작 → 부동소수 오차로 한 프레임 밀리는 것 방지
-    dur = (n + 0.4) / fps
+    off = p.in_frame / fps - t_in              # 첫 프레임까지의 간격(보통 반 프레임) — 오디오를 이만큼 잘라 싱크를 맞춤
+    dur = off + (n + 0.4) / fps
     in_tc = TC.from_frames(start_frames + p.in_frame, base, drop=bool(p.shot.tc_in and p.shot.tc_in.drop))
     cmd = [ffmpeg, "-hide_banner", "-nostats", "-loglevel", "error", "-y", "-ss", f"{t_in:.6f}", "-i", str(info.path), "-t", f"{dur:.6f}"]
     if codec == "png":
         p.out_path.mkdir(parents=True, exist_ok=True)
-        cmd += ["-an", "-frames:v", str(n), "-start_number", str(frame_start), "-f", "image2",
+        cmd += ["-an", "-frames:v", str(n), "-vf", "setpts=PTS-STARTPTS", "-start_number", str(frame_start), "-f", "image2",
                 str(p.out_path / f"{p.out_path.name}.%06d.png")]
     else:
         ext, cargs = CODECS[codec]
         cmd += list(cargs)
         if codec != "copy":
-            cmd += ["-frames:v", str(n)]
+            # 타임스탬프를 0부터 다시 매겨 플레이어/편집툴에서 첫 프레임이 밀리거나 중복되지 않게
+            cmd += ["-frames:v", str(n), "-vf", "setpts=PTS-STARTPTS",
+                    "-af", f"atrim=start={off:.6f},asetpts=PTS-STARTPTS"]
             for k, v in info.color.items():
                 cmd += [f"-{k}" if k != "color_space" else "-colorspace", v]
         if no_audio:
