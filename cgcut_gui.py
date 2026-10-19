@@ -15,7 +15,7 @@ import cgcut
 
 APP = "cgcut — CG 샷 자르기"
 VIDEO_TYPES = [("영상", "*.mov *.mp4 *.mxf *.mkv *.avi *.m4v *.mts *.m2ts"), ("모든 파일", "*.*")]
-LIST_TYPES = [("CG 리스트", "*.xlsx *.xlsm *.pdf *.txt"), ("모든 파일", "*.*")]
+LIST_TYPES = [("CG 리스트", "*.xlsx *.xlsm *.pdf *.edl *.txt"), ("EDL", "*.edl"), ("모든 파일", "*.*")]
 CODECS = [("ProRes 422 HQ (.mov) — CG 작업용", "prores"), ("ProRes 422 (.mov)", "prores422"),
           ("H.264 (.mp4) — 확인용", "h264"), ("PNG 이미지 시퀀스", "png"), ("재인코딩 없음 (빠름, 앞뒤 몇 프레임 오차)", "copy")]
 
@@ -57,7 +57,7 @@ class App(tk.Tk):
         ttk.Label(root, text="리스트 파일").grid(row=3, column=0, sticky="w", padx=10)
         self.list_var = tk.StringVar()
         ttk.Entry(root, textvariable=self.list_var).grid(row=3, column=1, sticky="ew", padx=10)
-        ttk.Button(root, text="xlsx / pdf…", command=self.pick_list).grid(row=3, column=2, sticky="e", padx=10)
+        ttk.Button(root, text="xlsx / pdf / edl…", command=self.pick_list).grid(row=3, column=2, sticky="e", padx=10)
         ttk.Label(root, text="직접 입력\n(한 줄에 하나)").grid(row=4, column=0, sticky="nw", padx=10, pady=4)
         self.tc_text = tk.Text(root, height=6, font=("Consolas", 11), undo=True)
         self.tc_text.grid(row=4, column=1, columnspan=2, sticky="ew", padx=10, pady=4)
@@ -100,6 +100,8 @@ class App(tk.Tk):
         ttk.Entry(self.fixed_box, textvariable=self.after_var, width=4).pack(side="left", padx=2)
         ttk.Label(self.fixed_box, text="초").pack(side="left")
 
+        self.edl_src_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(opt, text="EDL은 레코드(타임라인) TC 대신 소스 TC 사용", variable=self.edl_src_var).grid(row=5, column=0, columnspan=4, sticky="w")
         ttk.Label(opt, text="핸들(여유 프레임)").grid(row=3, column=0, sticky="w", pady=4)
         self.handles_var = tk.StringVar(value="0")
         ttk.Entry(opt, textvariable=self.handles_var, width=6).grid(row=3, column=1, sticky="w", padx=6)
@@ -215,6 +217,8 @@ class App(tk.Tk):
             except ValueError:
                 raise ValueError("고정 길이의 앞/뒤 초는 숫자여야 합니다.")
             argv += ["--mode", "fixed", "--before", str(b), "--after", str(a)]
+        if self.edl_src_var.get():
+            argv.append("--edl-source")
         st = self.start_var.get().strip()
         if st:
             if not cgcut.TC.parse(st):

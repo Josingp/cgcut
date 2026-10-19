@@ -399,6 +399,52 @@ def parse_pdf(path: Path) -> list[ShotRow]:
     return rows
 
 
+EDL_EVENT_RE = re.compile(
+    r"^\s*(\d{1,6})\s+(\S+)\s+(\S+)\s+(C|D|W\d*|K\s*B?|K)\s*(\d*)\s+"
+    r"(\d{1,2}[:;.]\d{2}[:;.]\d{2}[:;.]\d{2,3})\s+(\d{1,2}[:;.]\d{2}[:;.]\d{2}[:;.]\d{2,3})\s+"
+    r"(\d{1,2}[:;.]\d{2}[:;.]\d{2}[:;.]\d{2,3})\s+(\d{1,2}[:;.]\d{2}[:;.]\d{2}[:;.]\d{2,3})\s*$")
+
+
+def parse_edl(path: Path, use_source: bool = False) -> list[ShotRow]:
+    """CMX3600 EDL. 기본은 레코드(타임라인) IN/OUT을 쓰고, use_source면 소스 IN/OUT.
+    OUT은 EDL 관례대로 '마지막 프레임 다음'이므로 1프레임 당겨 포함 OUT으로 바꾼다.
+    '* FROM CLIP NAME:' 또는 '* COMMENT:' 줄이 있으면 파일명에 넣는다."""
+    text = path.read_text(encoding="utf-8-sig", errors="replace")
+    rows: list[ShotRow] = []
+    ep = ep_from_name(path.stem)
+    title = ""
+    for line in text.splitlines():
+        raw = line.rstrip()
+        if raw.upper().startswith("TITLE:"):
+            title = raw[6:].strip()
+            ep = ep_from_name(title) or ep
+            continue
+        m = EDL_EVENT_RE.match(raw)
+        if m:
+            num, reel = m.group(1), m.group(2)
+            if reel.upper() in ("BL", "BLACK"):
+                continue
+            tc_in_s, tc_out_s = (m.group(6), m.group(7)) if use_source else (m.group(8), m.group(9))
+            tc_in, tc_out = TC.parse(tc_in_s), TC.parse(tc_out_s)
+            if tc_in is None or tc_out is None:
+                continue
+            if rows and rows[-1].no == num:  # 같은 이벤트의 A/B 트랙(디졸브 등)은 한 번만
+                continue
+            rows.append(ShotRow(sheet=path.stem, row=len(rows) + 1, no=num, ep=ep, tc_in=tc_in, tc_out=tc_out,
+                                tc_raw=f"{tc_in} ~ {tc_out} (EDL)", desc=raw.strip()))
+            rows[-1]._edl_out_exclusive = True  # type: ignore[attr-defined]
+            continue
+        mc = re.match(r"^\*\s*(?:FROM CLIP NAME|CLIP NAME|COMMENT|LOC)\s*:\s*(.+)$", raw, re.I)
+        if mc and rows and not getattr(rows[-1], "_named", False):
+            name = mc.group(1).strip()
+            name = re.sub(r"\.[A-Za-z0-9]{2,4}$", "", name)  # 확장자 제거
+            if mc.group(0).upper().startswith("* LOC"):
+                name = name.split()[-1] if name.split() else name
+            rows[-1].no = f"{rows[-1].no}_{name}"
+            rows[-1]._named = True  # type: ignore[attr-defined]
+    return rows
+
+
 def load_shots(source: Optional[Path], tcs: Optional[list[str]] = None, sheets: Optional[list[str]] = None) -> list[ShotRow]:
     shots: list[ShotRow] = []
     if source:
@@ -413,10 +459,12 @@ def load_shots(source: Optional[Path], tcs: Optional[list[str]] = None, sheets: 
             shots += parse_workbook(source, sheets)
         elif ext == ".pdf":
             shots += parse_pdf(source)
+        elif ext == ".edl":
+            shots += parse_edl(source, use_source=bool(getattr(load_shots, "edl_source", False)))
         elif ext in (".txt", ".csv", ".md"):
             shots += parse_text(source.read_text(encoding="utf-8-sig", errors="replace"), ep_from_name(source.stem), sheet=source.stem)
         else:
-            raise CutError(f"[오류] 지원하지 않는 리스트 형식: {source.name} (xlsx / pdf / txt)")
+            raise CutError(f"[오류] 지원하지 않는 리스트 형식: {source.name} (xlsx / pdf / edl / txt)")
     if tcs:
         shots += parse_text("\n".join(tcs))
     return shots
@@ -641,6 +689,8 @@ def plan_cuts(shots: list[ShotRow], info: VideoInfo, args, scenes: Optional[Scen
             continue
         if s.tc_out is not None:
             O = s.tc_out.to_frames(base) - start + 1  # OUT TC는 마지막 프레임(포함)
+            if getattr(s, "_edl_out_exclusive", False):
+                O -= 1  # EDL의 OUT은 마지막 프레임 다음
             if O <= F:
                 p.status, p.note = "건너뜀", p.note + f"OUT TC({s.tc_out})가 IN보다 앞섬"
                 continue
@@ -873,7 +923,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  cgcut CG리스트.xlsx --clips-dir ./카메라원본/ -o out/\n"
         ),
     )
-    ap.add_argument("xlsx", nargs="?", metavar="리스트", help="CG 리스트 파일 (.xlsx / .pdf / .txt) — --tc만 쓸 때는 생략")
+    ap.add_argument("xlsx", nargs="?", metavar="리스트", help="CG 리스트 파일 (.xlsx / .pdf / .edl / .txt) — --tc만 쓸 때는 생략")
+    ap.add_argument("--edl-source", action="store_true", help="EDL의 레코드(타임라인) TC 대신 소스 TC를 사용")
     ap.add_argument("--tc", action="append", help="TC 직접 지정 (여러 번). 예: --tc 01:04:24:08  --tc \"01:04:24:08 ~ 01:04:30:00\"  --tc \"창문 01:04:24:08\"")
     ap.add_argument("--prefix", default="", help="출력 파일명 앞에 붙일 이름 (예: 쩔해주세요)")
     ap.add_argument("-o", "--out", default="cgcut_out", help="출력 폴더 (기본: cgcut_out)")
@@ -947,6 +998,7 @@ def run(args, cancel=None) -> int:
     if args.start_tc and args.start_tc_parsed is None:
         raise CutError(f"[오류] --start-tc 형식이 잘못됐습니다: {args.start_tc} (예: 01:00:00:00)")
 
+    load_shots.edl_source = bool(getattr(args, "edl_source", False))  # type: ignore[attr-defined]
     shots = load_shots(xlsx, args.tc, args.sheet)
     n_tc = sum(1 for s in shots if s.tc_in)
     n_clip = sum(1 for s in shots if s.clips)

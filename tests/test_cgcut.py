@@ -261,3 +261,44 @@ def test_video_dir_skips_previous_output(sample_dir: Path, tmp_path: Path):
     assert cgcut.main(args) == 0
     assert cgcut.main(args) == 0
     assert len(list((d / "cgcut_out").glob("*.mp4"))) == 6
+
+
+EDL_SAMPLE = """TITLE: EP01 CG
+FCM: NON-DROP FRAME
+
+001  A001C003 V     C        05:10:00:00 05:10:03:00 01:00:02:00 01:00:05:00
+* FROM CLIP NAME: A001C003_250915.mov
+002  BL       V     C        00:00:00:00 00:00:01:00 01:00:05:00 01:00:06:00
+003  A002C010 V     C        05:20:00:00 05:20:02:00 01:00:08:08 01:00:10:08
+003  A002C011 V     D    024 05:30:00:00 05:30:01:00 01:00:10:08 01:00:11:08
+* FROM CLIP NAME: 창문.mov
+* TO CLIP NAME: 다음.mov
+"""
+
+
+def test_parse_edl(tmp_path: Path):
+    p = tmp_path / "list.edl"
+    p.write_text(EDL_SAMPLE, encoding="utf-8")
+    rows = cgcut.parse_edl(p)
+    assert [(r.no, str(r.tc_in), str(r.tc_out), r.ep) for r in rows] == [
+        ("001_A001C003_250915", "01:00:02:00", "01:00:05:00", 1),
+        ("003_창문", "01:00:08:08", "01:00:10:08", 1),
+    ]
+    src = cgcut.parse_edl(p, use_source=True)
+    assert str(src[0].tc_in) == "05:10:00:00"
+    assert cgcut.load_shots(p)[0].label == "EP01_001_A001C003_250915"
+
+
+@pytest.mark.skipif(not HAVE_FFMPEG, reason="ffmpeg 없음")
+def test_cut_edl(sample_dir: Path, tmp_path: Path):
+    import make_sample as ms
+    p = tmp_path / "EP01_cg.edl"
+    p.write_text(EDL_SAMPLE, encoding="utf-8")
+    out = tmp_path / "out"
+    assert cgcut.main([str(p), "--video", str(sample_dir / "EP01_sample.mov"), "-o", str(out), "--codec", "h264"]) == 0
+    files = sorted(f.name for f in out.glob("*.mp4"))
+    assert files == ["EP01_001_A001C003_250915_01-00-02-00.mp4", "EP01_003_창문_01-00-08-08.mp4"]
+    # 01:00:02:00~01:00:05:00 (OUT 미포함) = 72프레임, 다음 샷으로 넘어가지 않음
+    means = _gray_frames(out / files[0], ms.W, ms.H)
+    assert len(means) == 72 and max(means) - min(means) < 3
+    assert len(_gray_frames(out / files[1], ms.W, ms.H)) == 48
