@@ -652,9 +652,60 @@ class CutPlan:
         return max(0, self.out_frame - self.in_frame)
 
 
-def _resolve_start_tc(info: VideoInfo, shots: list[ShotRow], override: Optional[TC]) -> tuple[int, str]:
+PART_RES = [r"(\d{1,3})\s*부(?![가-힣])", r"(?i)part\s*[_\-.]?\s*(\d{1,3})(?!\d)", r"(?i)(?<![A-Z])pt\.?\s*[_\-]?\s*(\d{1,3})(?!\d)",
+            r"(?i)(?<![A-Z0-9])p(\d{1,2})(?![0-9A-Z])", r"[_\-\s](\d{1,2})$"]
+
+
+def part_from_name(stem: str) -> tuple[Optional[int], str]:
+    """'쩔해주세요_2부' → (2, '쩔해주세요_'). 부/part/pt/p2/끝 숫자. 못 찾으면 (None, stem)."""
+    for pat in PART_RES:
+        m = re.search(pat, stem)
+        if m:
+            return int(m.group(1)), (stem[:m.start()] + stem[m.end():]).strip(" _-")
+    return None, stem
+
+
+def detect_parts(videos: list[Path]) -> Optional[list[Path]]:
+    """여러 파일이 같은 작품의 1부·2부·3부… 라면 순서대로 돌려준다. 아니면 None."""
+    if len(videos) < 2:
+        return None
+    parsed = [(part_from_name(v.stem), v) for v in videos]
+    if any(n is None for (n, _), _ in parsed):
+        return None
+    bases = {b for (_, b), _ in parsed}
+    if len(bases) != 1:
+        return None
+    nums = sorted(n for (n, _), _ in parsed)
+    if len(set(nums)) != len(nums):
+        return None
+    return [v for (_, _), v in sorted(parsed, key=lambda x: x[0][0])]
+
+
+def chain_parts(infos: list[VideoInfo], shots: list[ShotRow], override: Optional[TC]) -> Optional[dict[Path, int]]:
+    """부별 시작 프레임. 내장 TC가 있으면 그것, 없으면 앞 부에 이어 붙인다. 범위가 겹치면(각 부가 독립 TC) None."""
+    starts: dict[Path, int] = {}
+    prev_end: Optional[int] = None
+    for i, info in enumerate(infos):
+        base = info.tc_fps
+        if i == 0:
+            st, _ = _resolve_start_tc(info, shots, override)
+        elif info.start_tc is not None:
+            st = info.start_tc.to_frames(base)
+        else:
+            st = prev_end  # type: ignore[assignment]
+        if prev_end is not None and st < prev_end:
+            return None
+        starts[info.path] = st
+        prev_end = st + info.nb_frames
+    return starts
+
+
+def _resolve_start_tc(info: VideoInfo, shots: list[ShotRow], override: Optional[TC],
+                      override_frames: Optional[int] = None) -> tuple[int, str]:
     """파일의 첫 프레임이 어느 타임코드인지(프레임 번호) 결정."""
     base = info.tc_fps
+    if override_frames is not None:
+        return override_frames, "부(part) 이어붙임"
     if override is not None:
         return override.to_frames(base), f"옵션 --start-tc {override}"
     if info.start_tc is not None:
@@ -668,10 +719,11 @@ def _resolve_start_tc(info: VideoInfo, shots: list[ShotRow], override: Optional[
     return 0, "추정 00:00:00:00 (내장 TC 없음)"
 
 
-def plan_cuts(shots: list[ShotRow], info: VideoInfo, args, scenes: Optional[SceneIndex]) -> list[CutPlan]:
+def plan_cuts(shots: list[ShotRow], info: VideoInfo, args, scenes: Optional[SceneIndex],
+              start_frames: Optional[int] = None) -> list[CutPlan]:
     base = info.tc_fps
     fps = float(info.fps)
-    start, how = _resolve_start_tc(info, shots, args.start_tc_parsed)
+    start, how = _resolve_start_tc(info, shots, args.start_tc_parsed, start_frames)
     log(f"  시작 TC: {TC.from_frames(start, base)} ({how}), {float(info.fps):.3f}fps, {info.nb_frames}프레임, {info.width}x{info.height} {info.codec}")
     handles = args.handles
     plans: list[CutPlan] = []
@@ -925,6 +977,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ap.add_argument("xlsx", nargs="?", metavar="리스트", help="CG 리스트 파일 (.xlsx / .pdf / .edl / .txt) — --tc만 쓸 때는 생략")
     ap.add_argument("--edl-source", action="store_true", help="EDL의 레코드(타임라인) TC 대신 소스 TC를 사용")
+    ap.add_argument("--no-parts", action="store_true", help="1부·2부… 파일을 한 편으로 이어 보는 기능 끄기")
     ap.add_argument("--tc", action="append", help="TC 직접 지정 (여러 번). 예: --tc 01:04:24:08  --tc \"01:04:24:08 ~ 01:04:30:00\"  --tc \"창문 01:04:24:08\"")
     ap.add_argument("--prefix", default="", help="출력 파일명 앞에 붙일 이름 (예: 쩔해주세요)")
     ap.add_argument("-o", "--out", default="cgcut_out", help="출력 폴더 (기본: cgcut_out)")
@@ -1065,16 +1118,48 @@ def run(args, cancel=None) -> int:
     ffmpeg = _find_tool("ffmpeg", args.ffmpeg)
     ffprobe = _find_tool("ffprobe", args.ffprobe or (str(Path(ffmpeg).with_name("ffprobe" + Path(ffmpeg).suffix)) if args.ffmpeg else None))
 
-    by_video, unassigned = assign_videos(tc_shots, videos)
     plans: list[CutPlan] = []
     start_map: dict[Path, int] = {}
-    for s in unassigned:
-        plans.append(CutPlan(shot=s, status="건너뜀", note=f"EP{s.ep}에 해당하는 영상 파일 없음" if s.ep is not None else "회차를 알 수 없어 영상 배정 불가"))
+    part_starts: dict[Path, int] = {}
+    infos: dict[Path, VideoInfo] = {}
+    parts = None if getattr(args, "no_parts", False) else detect_parts(videos)
+    if parts:
+        # 1부·2부·3부… 를 이어진 한 편으로: TC가 어느 부에 들어가는지로 배정
+        try:
+            pinfos = [probe(ffprobe, v) for v in parts]
+        except RuntimeError as e:
+            raise CutError(str(e))
+        chain = chain_parts(pinfos, tc_shots, args.start_tc_parsed)
+        if chain:
+            infos.update({i.path: i for i in pinfos})
+            part_starts = chain
+            log("부(part)로 나뉜 파일을 한 편으로 인식:")
+            for i in pinfos:
+                st = chain[i.path]
+                log(f"  {i.path.name}: {TC.from_frames(st, i.tc_fps)} ~ {TC.from_frames(st + i.nb_frames - 1, i.tc_fps)}")
+            by_video: dict[Path, list[ShotRow]] = {}
+            unassigned: list[ShotRow] = []
+            for s in tc_shots:
+                if s.tc_in is None:
+                    unassigned.append(s)
+                    continue
+                f = s.tc_in.to_frames(pinfos[0].tc_fps)
+                hit = next((i for i in pinfos if chain[i.path] <= f < chain[i.path] + i.nb_frames), None)
+                (by_video.setdefault(hit.path, []) if hit else unassigned).append(s)
+            for s in unassigned:
+                plans.append(CutPlan(shot=s, status="건너뜀", note="TC 없음" if s.tc_in is None else f"TC {s.tc_in}가 어느 부에도 없음"))
+        else:
+            log("부 파일들의 TC 범위가 겹쳐 각각 별개 영상으로 처리합니다.")
+            parts = None
+    if not parts:
+        by_video, unassigned = assign_videos(tc_shots, videos)
+        for s in unassigned:
+            plans.append(CutPlan(shot=s, status="건너뜀", note=f"EP{s.ep}에 해당하는 영상 파일 없음" if s.ep is not None else "회차를 알 수 없어 영상 배정 불가"))
 
     for vpath, vshots in by_video.items():
         log(f"\n영상: {vpath}")
         try:
-            info = probe(ffprobe, vpath)
+            info = infos.get(vpath) or probe(ffprobe, vpath)
         except RuntimeError as e:
             warn(str(e))
             for s in vshots:
@@ -1093,8 +1178,8 @@ def run(args, cancel=None) -> int:
                 def around(self, frame, before, after):
                     return []
             scenes = _NoScenes()  # type: ignore[assignment]
-        vplans = plan_cuts(vshots, info, args, scenes)
-        start_map[vpath] = _resolve_start_tc(info, vshots, args.start_tc_parsed)[0]
+        vplans = plan_cuts(vshots, info, args, scenes, part_starts.get(vpath))
+        start_map[vpath] = _resolve_start_tc(info, vshots, args.start_tc_parsed, part_starts.get(vpath))[0]
         for p in vplans:
             if p.status == "예정":
                 p.out_path = output_path(p, out_dir, args.codec, start_map[vpath], getattr(args, "prefix", ""))

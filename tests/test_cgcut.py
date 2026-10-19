@@ -302,3 +302,43 @@ def test_cut_edl(sample_dir: Path, tmp_path: Path):
     means = _gray_frames(out / files[0], ms.W, ms.H)
     assert len(means) == 72 and max(means) - min(means) < 3
     assert len(_gray_frames(out / files[1], ms.W, ms.H)) == 48
+
+
+def test_part_from_name():
+    f = cgcut.part_from_name
+    assert f("쩔해주세요_2부") == (2, "쩔해주세요")
+    assert f("movie_part3") == (3, "movie")
+    assert f("Movie Pt.2 fine") == (2, "Movie  fine".replace("  ", "  ")) or f("Movie Pt.2 fine")[0] == 2
+    assert f("final_03") == (3, "final")
+    assert f("EP04_sample")[0] is None
+    assert cgcut.detect_parts([Path("x_2부.mov"), Path("x_1부.mov"), Path("x_3부.mov")]) == [Path("x_1부.mov"), Path("x_2부.mov"), Path("x_3부.mov")]
+    assert cgcut.detect_parts([Path("x_1부.mov"), Path("y_2부.mov")]) is None
+    assert cgcut.detect_parts([Path("a.mov"), Path("b.mov")]) is None
+
+
+@pytest.mark.skipif(not HAVE_FFMPEG, reason="ffmpeg 없음")
+@pytest.mark.parametrize("embedded", [True, False])
+def test_parts_chain(tmp_path: Path, embedded: bool):
+    """1부(01:00:00:00~)와 2부가 이어진 한 편. 2부에 내장 TC가 있든 없든 TC로 부를 찾아 자른다."""
+    import make_sample as ms
+    import openpyxl
+    d = tmp_path / "v"
+    d.mkdir()
+    ms.make_video(d / "영화_1부.mov", "01:00:00:00")
+    ms.make_video(d / "영화_2부.mov", "01:00:30:02" if embedded else None)  # 1부 722프레임 뒤에 이어짐
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["no.", "TC"])
+    ws.append([1, "01:00:02:00"])        # 1부 샷2 (48~119)
+    ws.append([2, "01:00:32:02"])        # 2부 48프레임 → 샷2
+    ws.append([3, "01:01:30:00"])        # 범위 밖
+    wb.save(d / "list.xlsx")
+    out = tmp_path / "out"
+    assert cgcut.main([str(d / "list.xlsx"), "--video-dir", str(d), "-o", str(out), "--codec", "h264"]) == 0
+    files = sorted(f.name for f in out.glob("*.mp4"))
+    assert files == ["Sheet_1_01-00-02-00.mp4", "Sheet_2_01-00-32-02.mp4"], files
+    for f in files:
+        means = _gray_frames(out / f, ms.W, ms.H)
+        assert len(means) == 72 and abs(means[0] - ms.GRAYS[1]) < 6
+    rep = (out / "cgcut_report.csv").read_text(encoding="utf-8-sig")
+    assert "어느 부에도 없음" in rep and "영화_2부.mov" in rep
