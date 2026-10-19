@@ -39,12 +39,25 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 
+LOG_HOOK = None  # GUI 등에서 교체: callable(str)
+
+
 def log(msg: str = "") -> None:
-    print(msg, flush=True)
+    if LOG_HOOK:
+        LOG_HOOK(msg)
+    else:
+        print(msg, flush=True)
 
 
 def warn(msg: str) -> None:
-    print(f"[경고] {msg}", file=sys.stderr, flush=True)
+    if LOG_HOOK:
+        LOG_HOOK(f"[경고] {msg}")
+    else:
+        print(f"[경고] {msg}", file=sys.stderr, flush=True)
+
+
+class CutError(Exception):
+    """치명적 오류 (CLI에서는 메시지 출력 후 종료, GUI에서는 창으로 표시)."""
 
 
 # ---------------------------------------------------------------------------
@@ -316,17 +329,121 @@ def parse_workbook(path: Path, sheets: Optional[list[str]] = None) -> list[ShotR
     return rows
 
 
+def parse_text(text: str, default_ep: Optional[int] = None, sheet: str = "TC") -> list[ShotRow]:
+    """줄 단위 TC 목록. '01:04:24:08' / '01:04:24:08 ~ 01:04:30:00' / '이름 01:04:24:08' / 'EP04 3 01:04:24:08'."""
+    rows: list[ShotRow] = []
+    cur_ep = default_ep
+    n = 0
+    for i, line in enumerate(text.splitlines(), 1):
+        raw = line.strip()
+        if not raw or raw.startswith("#"):
+            continue
+        m_ep = re.search(r"(?i)(?<![A-Z0-9])EP\s*(\d{1,3})(?!\d)", raw)
+        if m_ep and not TC_RE.search(raw):
+            cur_ep = int(m_ep.group(1))
+            continue
+        tcs = TC.find_all(raw)
+        if not tcs:
+            continue
+        n += 1
+        head = TC_RE.split(raw)[0]
+        name = head
+        for pat in (r"(?i)(?<![A-Z0-9])EP\s*\d{1,3}(?!\d)", r"^\s*(?:no\.?|#)\s*", r"[\s,;:\-–~]+$"):
+            name = re.sub(pat, " ", name)
+        name = name.strip(" \t.-_:,")
+        ep = int(m_ep.group(1)) if m_ep else cur_ep
+        rows.append(ShotRow(sheet=sheet, row=i, no=name or f"{n:02d}", ep=ep, tc_in=tcs[0],
+                            tc_out=tcs[1] if len(tcs) > 1 else None, tc_raw=raw, desc=raw))
+    return rows
+
+
+def parse_pdf(path: Path) -> list[ShotRow]:
+    """PDF로 받은 CG 리스트: 페이지 글자에서 TC를 찾는다. 'EP04' 표기를 만나면 이후 행의 회차로 쓴다."""
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        raise CutError("[오류] PDF를 읽으려면 pypdf가 필요합니다:  pip install pypdf")
+    rows: list[ShotRow] = []
+    cur_ep = ep_from_name(path.stem)
+    reader = PdfReader(str(path))
+    pending_range = False  # 직전 줄이 'TC ~' 로 끝났거나 '~' 한 줄
+    for pno, page in enumerate(reader.pages, 1):
+        text = page.extract_text() or ""
+        for line in text.splitlines():
+            raw = line.strip()
+            m_ep = re.search(r"(?i)(?<![A-Z0-9])EP\s*[_\-]?\s*(\d{1,3})(?!\d)", raw)
+            if m_ep:
+                cur_ep = int(m_ep.group(1))
+            tcs = TC.find_all(raw)
+            if not tcs:
+                if raw in ("~", "-", "–"):
+                    pending_range = True
+                continue
+            head = TC_RE.split(raw)[0]
+            # 'TC ~' 다음 줄, 또는 '~ TC' 로 시작하는 줄 → 직전 행의 OUT
+            if rows and rows[-1].tc_out is None and (pending_range or re.match(r"^[~\-–]\s*$", head)):
+                rows[-1].tc_out = tcs[0]
+                rows[-1].tc_raw += f" ~ {tcs[0]}"
+                pending_range = False
+                continue
+            range_start = bool(re.search(r"[~\-–]\s*$", raw))
+            m_no = re.match(r"\s*(\d{1,3}(?:-\d{1,2})?)\b", head)
+            head_rest = re.sub(r"(?i)EP\s*[_\-]?\s*\d{1,3}", "", head)
+            tail = TC_RE.split(raw)[-1]
+            if not m_no and not range_start and (re.search(r"[^\s.\-_]", head_rest) or re.search(r"[가-힣A-Za-z]{2,}", tail)):
+                continue  # 번호 없이 설명문 안에 들어 있는 TC(예: '(01:00:16:17 부터 그래픽 등장)')는 컷이 아님
+            pending_range = range_start
+            no = m_no.group(1) if m_no else ""
+            rows.append(ShotRow(sheet=f"p{pno}", row=pno, no=no, ep=cur_ep, tc_in=tcs[0],
+                                tc_out=tcs[1] if len(tcs) > 1 else None, tc_raw=raw, desc=raw))
+    return rows
+
+
+def load_shots(source: Optional[Path], tcs: Optional[list[str]] = None, sheets: Optional[list[str]] = None) -> list[ShotRow]:
+    shots: list[ShotRow] = []
+    if source:
+        if not source.exists():
+            raise CutError(f"[오류] 파일이 없습니다: {source}")
+        ext = source.suffix.lower()
+        if ext in (".xlsx", ".xlsm"):
+            try:
+                import openpyxl  # noqa: F401
+            except ImportError:
+                raise CutError("[오류] openpyxl이 없습니다:  pip install openpyxl")
+            shots += parse_workbook(source, sheets)
+        elif ext == ".pdf":
+            shots += parse_pdf(source)
+        elif ext in (".txt", ".csv", ".md"):
+            shots += parse_text(source.read_text(encoding="utf-8-sig", errors="replace"), ep_from_name(source.stem), sheet=source.stem)
+        else:
+            raise CutError(f"[오류] 지원하지 않는 리스트 형식: {source.name} (xlsx / pdf / txt)")
+    if tcs:
+        shots += parse_text("\n".join(tcs))
+    return shots
+
+
 # ---------------------------------------------------------------------------
 # ffmpeg / ffprobe
 # ---------------------------------------------------------------------------
+def _bundled(name: str) -> Optional[str]:
+    exe = name + (".exe" if os.name == "nt" else "")
+    dirs = [Path(getattr(sys, "_MEIPASS", "")), Path(sys.executable).parent, Path(__file__).resolve().parent]
+    for d in dirs:
+        if str(d) and (d / exe).is_file():
+            return str(d / exe)
+        if str(d) and (d / "ffmpeg" / exe).is_file():
+            return str(d / "ffmpeg" / exe)
+    return None
+
+
 def _find_tool(name: str, explicit: Optional[str]) -> str:
-    cand = explicit or shutil.which(name)
+    cand = explicit or _bundled(name) or shutil.which(name)
     if not cand:
         if explicit is None and os.name == "nt":
             hint = "  winget install Gyan.FFmpeg  (설치 후 터미널을 다시 열 것)"
         else:
             hint = "  macOS: brew install ffmpeg / Ubuntu: sudo apt install ffmpeg"
-        sys.exit(f"[오류] {name}을(를) 찾을 수 없습니다. ffmpeg를 설치하거나 --ffmpeg 옵션으로 경로를 지정하세요.\n{hint}")
+        raise CutError(f"[오류] {name}을(를) 찾을 수 없습니다. ffmpeg를 설치하거나 --ffmpeg 옵션으로 경로를 지정하세요.\n{hint}")
     return cand
 
 
@@ -581,11 +698,13 @@ CODECS = {
 }
 
 
-def output_path(p: CutPlan, out_dir: Path, codec: str, start_frames: int) -> Path:
+def output_path(p: CutPlan, out_dir: Path, codec: str, start_frames: int, prefix: str = "") -> Path:
     s, info = p.shot, p.video
     assert info is not None
     in_tc = TC.from_frames(start_frames + p.in_frame, info.tc_fps, drop=bool(s.tc_in and s.tc_in.drop))
     name = f"{s.label}_{in_tc.filename()}"
+    if prefix:
+        name = f"{_safe(prefix)}_{name}"
     ext = CODECS[codec][0]
     if codec == "copy":
         ext = info.path.suffix.lower() or ".mov"
@@ -647,11 +766,11 @@ def collect_videos(args) -> list[Path]:
         elif pth.exists():
             files.append(pth)
         else:
-            sys.exit(f"[오류] 영상 파일이 없습니다: {pth}")
+            raise CutError(f"[오류] 영상 파일이 없습니다: {pth}")
     if args.video_dir:
         d = Path(args.video_dir)
         if not d.is_dir():
-            sys.exit(f"[오류] 폴더가 없습니다: {d}")
+            raise CutError(f"[오류] 폴더가 없습니다: {d}")
         files += sorted(p for p in d.rglob("*") if p.suffix.lower() in VIDEO_EXTS and not p.name.startswith("."))
     seen: set[Path] = set()
     out: list[Path] = []
@@ -751,7 +870,9 @@ def build_parser() -> argparse.ArgumentParser:
             "  cgcut CG리스트.xlsx --clips-dir ./카메라원본/ -o out/\n"
         ),
     )
-    ap.add_argument("xlsx", help="CG 리스트 엑셀 파일")
+    ap.add_argument("xlsx", nargs="?", metavar="리스트", help="CG 리스트 파일 (.xlsx / .pdf / .txt) — --tc만 쓸 때는 생략")
+    ap.add_argument("--tc", action="append", help="TC 직접 지정 (여러 번). 예: --tc 01:04:24:08  --tc \"01:04:24:08 ~ 01:04:30:00\"  --tc \"창문 01:04:24:08\"")
+    ap.add_argument("--prefix", default="", help="출력 파일명 앞에 붙일 이름 (예: 쩔해주세요)")
     ap.add_argument("-o", "--out", default="cgcut_out", help="출력 폴더 (기본: cgcut_out)")
     ap.add_argument("--video", action="append", help="원본 영상 파일 (여러 번 지정 가능, 폴더도 가능)")
     ap.add_argument("--video-dir", help="원본 영상 폴더 — 파일명의 EP01/1화 등으로 회차 매칭")
@@ -784,7 +905,7 @@ def drop_args(paths: list[str]) -> list[str]:
     .xlsx → 리스트, 영상 파일 → --video, 폴더 → --video-dir. 출력은 리스트 옆 cgcut_out 폴더."""
     xlsx = [p for p in paths if p.lower().endswith((".xlsx", ".xlsm"))]
     if len(xlsx) != 1:
-        sys.exit("[오류] CG 리스트 엑셀(.xlsx) 1개와 원본 영상(또는 영상 폴더)을 함께 끌어다 놓으세요.")
+        raise CutError("[오류] CG 리스트 엑셀(.xlsx) 1개와 원본 영상(또는 영상 폴더)을 함께 끌어다 놓으세요.")
     out = [xlsx[0], "-o", str(Path(xlsx[0]).resolve().parent / "cgcut_out")]
     for p in paths:
         if p in xlsx:
@@ -806,25 +927,29 @@ def main(argv: Optional[list[str]] = None) -> int:
         opts = [a for a in rest if a not in files]
         argv = drop_args(files) + opts
     args = build_parser().parse_args(argv)
-    xlsx = Path(args.xlsx)
-    if not xlsx.exists():
-        sys.exit(f"[오류] 파일이 없습니다: {xlsx}")
+    try:
+        return run(args)
+    except CutError as e:
+        print(str(e), file=sys.stderr, flush=True)
+        return 2
+
+
+def run(args, cancel=None) -> int:
+    """args: build_parser()로 만든 네임스페이스. cancel: 호출하면 True를 돌려주는 함수(중단 요청)."""
+    if not args.xlsx and not args.tc:
+        raise CutError("[오류] CG 리스트 파일(.xlsx/.pdf/.txt)이나 --tc 를 지정하세요.")
+    xlsx = Path(args.xlsx) if args.xlsx else None
     out_dir = Path(args.out)
     args.start_tc_parsed = TC.parse(args.start_tc) if args.start_tc else None
     if args.start_tc and args.start_tc_parsed is None:
-        sys.exit(f"[오류] --start-tc 형식이 잘못됐습니다: {args.start_tc} (예: 01:00:00:00)")
+        raise CutError(f"[오류] --start-tc 형식이 잘못됐습니다: {args.start_tc} (예: 01:00:00:00)")
 
-    try:
-        import openpyxl  # noqa: F401
-    except ImportError:
-        sys.exit("[오류] openpyxl이 없습니다:  pip install openpyxl")
-
-    shots = parse_workbook(xlsx, args.sheet)
+    shots = load_shots(xlsx, args.tc, args.sheet)
     n_tc = sum(1 for s in shots if s.tc_in)
     n_clip = sum(1 for s in shots if s.clips)
-    log(f"리스트: {xlsx.name} — 행 {len(shots)}개 (TC 있음 {n_tc}, 클립명 있음 {n_clip})")
+    log(f"리스트: {xlsx.name if xlsx else '직접 입력'} — 행 {len(shots)}개 (TC 있음 {n_tc}, 클립명 있음 {n_clip})")
     if not shots:
-        sys.exit("[오류] TC나 클립명이 있는 행을 찾지 못했습니다. 헤더에 'TC' 또는 'Scan Name' 열이 있는지 확인하세요.")
+        raise CutError("[오류] TC나 클립명이 있는 행을 찾지 못했습니다. 헤더에 'TC' 또는 'Scan Name' 열이 있는지 확인하세요.")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     rc = 0
@@ -837,7 +962,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.clips_dir:
         cdir = Path(args.clips_dir)
         if not cdir.is_dir():
-            sys.exit(f"[오류] 폴더가 없습니다: {cdir}")
+            raise CutError(f"[오류] 폴더가 없습니다: {cdir}")
         dest = out_dir / "clips"
         rows_out = []
         log(f"\n클립 찾기: {cdir}")
@@ -880,7 +1005,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 tc = f"{s.tc_in}" + (f" ~ {s.tc_out}" if s.tc_out else "") if s.tc_in else "(TC 없음)"
                 log(f"  {s.sheet:<8} no.{s.no:<5} EP{s.ep if s.ep is not None else '?':<4} {tc:<26} {s.desc[:40].replace(chr(10), ' ')}")
             return 0
-        sys.exit("[오류] 원본 영상을 지정하세요: --video 파일 또는 --video-dir 폴더 (계획만 보려면 --dry-run)")
+        raise CutError("[오류] 원본 영상을 지정하세요: --video 파일 또는 --video-dir 폴더 (계획만 보려면 --dry-run)")
 
     ffmpeg = _find_tool("ffmpeg", args.ffmpeg)
     ffprobe = _find_tool("ffprobe", args.ffprobe or (str(Path(ffmpeg).with_name("ffprobe" + Path(ffmpeg).suffix)) if args.ffmpeg else None))
@@ -917,7 +1042,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         start_map[vpath] = _resolve_start_tc(info, vshots, args.start_tc_parsed)[0]
         for p in vplans:
             if p.status == "예정":
-                p.out_path = output_path(p, out_dir, args.codec, start_map[vpath])
+                p.out_path = output_path(p, out_dir, args.codec, start_map[vpath], getattr(args, "prefix", ""))
         plans += vplans
 
     todo = [p for p in plans if p.status == "예정"]
@@ -942,6 +1067,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     t0 = time.time()
     for i, p in enumerate(todo, 1):
         assert p.out_path is not None and p.video is not None
+        if cancel and cancel():
+            log("중단됨.")
+            rc = 3
+            break
         exists = p.out_path.exists() if args.codec != "png" else (p.out_path.is_dir() and any(p.out_path.iterdir()))
         if exists and not args.overwrite:
             p.status, p.note = "이미 있음", p.note + "출력 파일 있음(--overwrite로 다시 만듦)"

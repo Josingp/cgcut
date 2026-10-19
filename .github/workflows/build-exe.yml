@@ -1,0 +1,74 @@
+name: Build Windows exe
+
+on:
+  push:
+    branches: [main]
+    paths: ["cgcut.py", "cgcut_gui.py", ".github/workflows/build-exe.yml", "requirements.txt"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install pyinstaller openpyxl pypdf
+
+      - name: Download ffmpeg (gyan.dev essentials)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffzip
+          $bin = Get-ChildItem ffzip -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          New-Item -ItemType Directory -Force ffbin | Out-Null
+          Copy-Item $bin.FullName ffbin/ffmpeg.exe
+          Copy-Item (Join-Path $bin.DirectoryName ffprobe.exe) ffbin/ffprobe.exe
+          & ffbin/ffmpeg.exe -version | Select-Object -First 1
+
+      - name: GUI smoke test (source)
+        shell: pwsh
+        run: |
+          $env:PATH = "$PWD/ffbin;" + $env:PATH
+          python tests/gui_smoke.py gui_smoke
+          python -m pip install pytest
+          python -m pytest -q tests
+
+      - name: Build
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --onefile --windowed --name cgcut `
+            --add-binary "ffbin/ffmpeg.exe;." --add-binary "ffbin/ffprobe.exe;." `
+            --collect-submodules openpyxl --collect-submodules pypdf `
+            cgcut_gui.py
+          Get-Item dist/cgcut.exe | Format-List Name, Length
+
+      - name: Smoke test (CLI mode)
+        shell: pwsh
+        run: |
+          & dist/cgcut.exe --version
+          & dist/cgcut.exe --help | Select-Object -First 3
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cgcut-windows
+          path: dist/cgcut.exe
+
+      - name: Release (latest)
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: cgcut (최신 빌드)
+          body: |
+            `cgcut.exe` 하나만 받아서 실행하면 됩니다 (ffmpeg 포함, 설치 불필요).
+            처음 실행 시 윈도우가 "PC 보호" 창을 띄우면 **추가 정보 → 실행**.
+          files: dist/cgcut.exe
+          prerelease: false
