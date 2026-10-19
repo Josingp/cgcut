@@ -3,7 +3,7 @@ name: Build Windows exe
 on:
   push:
     branches: [main]
-    paths: ["cgcut.py", "cgcut_gui.py", ".github/workflows/build-exe.yml", "requirements.txt"]
+    paths: ["cgcut.py", "cgcut_gui.py", ".github/workflows/build-exe.yml", "requirements.txt", "RELEASE_NOTES.md"]
   workflow_dispatch:
 
 permissions:
@@ -118,8 +118,6 @@ jobs:
         with:
           tag_name: latest
           name: cgcut (최신 빌드)
-          body: |
-            `cgcut.exe` 하나만 받아서 실행하면 됩니다 (ffmpeg 포함, 설치 불필요).
-            처음 실행 시 윈도우가 "PC 보호" 창을 띄우면 **추가 정보 → 실행**.
+          body_path: RELEASE_NOTES.md
           files: dist/cgcut.exe
           prerelease: false
