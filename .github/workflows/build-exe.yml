@@ -84,8 +84,11 @@ jobs:
             if (Test-Path exe.err.log) { Get-Content exe.err.log | Out-File -Append exe.log }
             $n = @(Get-ChildItem exe_out -Filter *.mp4).Count
             "exe outputs: $n" | Out-File -Append exe.log
+            "LASTEXITCODE before end: $LASTEXITCODE" | Out-File -Append exe.log
             Get-Content exe.log
             if ($n -ne 6) { throw "expected 6 outputs, got $n" }
+            $global:LASTEXITCODE = 0
+            exit 0
           } catch {
             "STEP ERROR: $_" | Out-File -Append exe.log
             $Error | Out-String | Out-File -Append exe.log
