@@ -56,7 +56,7 @@ jobs:
           $tail = (Get-Content test.log -Tail 120) -join "`n"
           $body = "cgcut CI tests failed:`n`n``````text`n$tail`n``````"
           $body | Out-File body.txt -Encoding utf8
-          gh api repos/${{ github.repository }}/commits/${{ github.sha }}/comments -f body=@body.txt | Out-Null
+          gh api repos/${{ github.repository }}/commits/${{ github.sha }}/comments -F body=@body.txt | Out-Null
 
       - name: Build
         shell: pwsh
@@ -68,14 +68,31 @@ jobs:
           Get-Item dist/cgcut.exe | Format-List Name, Length
 
       - name: Smoke test exe (CLI mode, bundled ffmpeg)
+        id: exetest
+        continue-on-error: true
         shell: pwsh
         run: |
-          & dist/cgcut.exe --version
+          $env:PATH = "$PWD/ffbin;" + $env:PATH
           python tests/make_sample.py exe_sample
-          & dist/cgcut.exe exe_sample/CG_list_sample.xlsx --video exe_sample/EP01_sample.mov -o exe_out --codec h264 --sheet EP01 2>&1 | Tee-Object exe.log
-          $n = (Get-ChildItem exe_out -Filter *.mp4).Count
+          # --windowed exe는 터미널에서 바로 분리되므로 끝날 때까지 기다린다
+          $p = Start-Process -FilePath (Resolve-Path dist/cgcut.exe) -ArgumentList @("exe_sample/CG_list_sample.xlsx", "--video", "exe_sample/EP01_sample.mov", "-o", "exe_out", "--codec", "h264", "--sheet", "EP01") -Wait -PassThru -RedirectStandardOutput exe.out.log -RedirectStandardError exe.err.log
+          "exit code: $($p.ExitCode)" | Tee-Object exe.log
+          Get-Content exe.out.log, exe.err.log | Tee-Object -Append exe.log
+          $n = (Get-ChildItem exe_out -Filter *.mp4 -ErrorAction SilentlyContinue).Count
           "exe outputs: $n" | Tee-Object -Append exe.log
           if ($n -ne 6) { exit 1 }
+
+      - name: Report exe test result
+        if: steps.exetest.outcome == 'failure'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tail = (Get-Content exe.log -Tail 120) -join "`n"
+          $body = "cgcut exe smoke test failed:`n`n``````text`n$tail`n``````"
+          $body | Out-File body2.txt -Encoding utf8
+          gh api repos/${{ github.repository }}/commits/${{ github.sha }}/comments -F body=@body2.txt | Out-Null
+          exit 1
 
       - uses: actions/upload-artifact@v4
         with:
