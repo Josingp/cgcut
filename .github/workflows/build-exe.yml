@@ -33,13 +33,30 @@ jobs:
           Copy-Item (Join-Path $bin.DirectoryName ffprobe.exe) ffbin/ffprobe.exe
           & ffbin/ffmpeg.exe -version | Select-Object -First 1
 
-      - name: GUI smoke test (source)
+      - name: Tests (source)
+        id: tests
+        continue-on-error: true
         shell: pwsh
         run: |
           $env:PATH = "$PWD/ffbin;" + $env:PATH
-          python tests/gui_smoke.py gui_smoke
+          $env:PYTHONIOENCODING = "utf-8"
           python -m pip install pytest
-          python -m pytest -q tests
+          "== pytest ==" | Out-File test.log
+          python -m pytest -q tests 2>&1 | Tee-Object -Append test.log
+          "== gui smoke ==" | Out-File -Append test.log
+          python tests/gui_smoke.py gui_smoke 2>&1 | Tee-Object -Append test.log
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Report test result as commit comment
+        if: steps.tests.outcome == 'failure'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tail = (Get-Content test.log -Tail 120) -join "`n"
+          $body = "cgcut CI tests failed:`n`n``````text`n$tail`n``````"
+          $body | Out-File body.txt -Encoding utf8
+          gh api repos/${{ github.repository }}/commits/${{ github.sha }}/comments -f body=@body.txt | Out-Null
 
       - name: Build
         shell: pwsh
@@ -50,11 +67,15 @@ jobs:
             cgcut_gui.py
           Get-Item dist/cgcut.exe | Format-List Name, Length
 
-      - name: Smoke test (CLI mode)
+      - name: Smoke test exe (CLI mode, bundled ffmpeg)
         shell: pwsh
         run: |
           & dist/cgcut.exe --version
-          & dist/cgcut.exe --help | Select-Object -First 3
+          python tests/make_sample.py exe_sample
+          & dist/cgcut.exe exe_sample/CG_list_sample.xlsx --video exe_sample/EP01_sample.mov -o exe_out --codec h264 --sheet EP01 2>&1 | Tee-Object exe.log
+          $n = (Get-ChildItem exe_out -Filter *.mp4).Count
+          "exe outputs: $n" | Tee-Object -Append exe.log
+          if ($n -ne 6) { exit 1 }
 
       - uses: actions/upload-artifact@v4
         with:
