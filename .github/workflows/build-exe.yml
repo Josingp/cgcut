@@ -72,15 +72,25 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: |
-          $env:PATH = "$PWD/ffbin;" + $env:PATH
-          python tests/make_sample.py exe_sample
-          # --windowed exe는 터미널에서 바로 분리되므로 끝날 때까지 기다린다
-          $p = Start-Process -FilePath (Resolve-Path dist/cgcut.exe) -ArgumentList @("exe_sample/CG_list_sample.xlsx", "--video", "exe_sample/EP01_sample.mov", "-o", "exe_out", "--codec", "h264", "--sheet", "EP01") -Wait -PassThru -RedirectStandardOutput exe.out.log -RedirectStandardError exe.err.log
-          "exit code: $($p.ExitCode)" | Tee-Object exe.log
-          Get-Content exe.out.log, exe.err.log -ErrorAction SilentlyContinue | Tee-Object -Append exe.log
-          $n = (Get-ChildItem exe_out -Filter *.mp4 -ErrorAction SilentlyContinue).Count
-          "exe outputs: $n" | Tee-Object -Append exe.log
-          if ($n -ne 6) { exit 1 }
+          $ErrorActionPreference = "Continue"
+          try {
+            $env:PATH = "$PWD/ffbin;" + $env:PATH
+            python tests/make_sample.py exe_sample
+            # --windowed exe는 터미널에서 바로 분리되므로 끝날 때까지 기다린다
+            $exe = (Resolve-Path dist/cgcut.exe).Path
+            $p = Start-Process -FilePath $exe -ArgumentList @("exe_sample/CG_list_sample.xlsx", "--video", "exe_sample/EP01_sample.mov", "-o", "exe_out", "--codec", "h264", "--sheet", "EP01") -Wait -PassThru -NoNewWindow -RedirectStandardOutput exe.out.log -RedirectStandardError exe.err.log
+            "exit code: $($p.ExitCode)" | Out-File exe.log
+            if (Test-Path exe.out.log) { Get-Content exe.out.log | Out-File -Append exe.log }
+            if (Test-Path exe.err.log) { Get-Content exe.err.log | Out-File -Append exe.log }
+            $n = @(Get-ChildItem exe_out -Filter *.mp4).Count
+            "exe outputs: $n" | Out-File -Append exe.log
+            Get-Content exe.log
+            if ($n -ne 6) { throw "expected 6 outputs, got $n" }
+          } catch {
+            "STEP ERROR: $_" | Out-File -Append exe.log
+            $Error | Out-String | Out-File -Append exe.log
+            exit 1
+          }
 
       - name: Report exe test result
         if: steps.exetest.outcome == 'failure'
