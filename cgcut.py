@@ -496,7 +496,79 @@ def _find_tool(name: str, explicit: Optional[str]) -> str:
 
 
 def _run(cmd: list[str], timeout: Optional[float] = None) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
+                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
+PROGRESS_HOOK = None  # callable(stage: str, done: float, total: float, detail: str) — GUI 등에서 교체
+_PROG_RE = re.compile(r"^(frame|out_time_us|out_time_ms|speed|fps)=(.*)$")
+
+
+def report(stage: str, done: float, total: float, detail: str = "") -> None:
+    if PROGRESS_HOOK:
+        try:
+            PROGRESS_HOOK(stage, done, total, detail)
+        except Exception:
+            pass
+    elif stage in ("장면 검출", "자르기") and sys.stderr and total:
+        try:
+            end = "\n" if done >= total else ""
+            sys.stderr.write(f"\r    {stage} {100.0 * done / total:5.1f}%  {detail}        {end}")
+            sys.stderr.flush()
+        except Exception:
+            pass
+
+
+def _run_ffmpeg_progress(cmd: list[str], stage: str, total_frames: int, fps: float, by_time: bool = False) -> subprocess.CompletedProcess:
+    """ffmpeg를 -progress로 실행하면서 프레임 진행률을 PROGRESS_HOOK으로 보낸다. (cmd[0]은 ffmpeg)"""
+    full = [cmd[0], "-progress", "pipe:1", "-stats_period", "0.25", "-nostats"] + cmd[1:]
+    proc = subprocess.Popen(full, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                            errors="replace", bufsize=1, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    err_chunks: list[str] = []
+
+    def drain_err():
+        assert proc.stderr is not None
+        for line in proc.stderr:
+            err_chunks.append(line)
+
+    import threading
+    t = threading.Thread(target=drain_err, daemon=True)
+    t.start()
+    frame = 0
+    speed = ""
+    t0 = time.time()
+    last = 0.0
+    report(stage, 0, total_frames, "시작")
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        m = _PROG_RE.match(line.strip())
+        if not m:
+            continue
+        k, v = m.group(1), m.group(2).strip()
+        if k == "frame" and not by_time:
+            try:
+                frame = int(v)
+            except ValueError:
+                pass
+        elif k == "out_time_us" and by_time:
+            try:
+                frame = int(int(v) / 1e6 * fps)
+            except ValueError:
+                pass
+        elif k == "speed":
+            speed = v
+        now = time.time()
+        if now - last >= 0.2 or frame >= total_frames:
+            last = now
+            el = now - t0
+            rate = frame / el if el > 0 else 0
+            eta = (total_frames - frame) / rate if rate > 0 and total_frames > frame else 0
+            detail = f"{frame:,}/{total_frames:,}프레임 · {el:.0f}초 경과" + (f" · 남은 시간 약 {eta:.0f}초" if eta else "") + (f" · {speed}" if speed and speed != "N/A" else "")
+            report(stage, min(frame, total_frames), total_frames, detail)
+    proc.wait()
+    t.join(timeout=5)
+    report(stage, total_frames, total_frames, "완료")
+    return subprocess.CompletedProcess(full, proc.returncode, "", "".join(err_chunks))
 
 
 @dataclass
@@ -570,9 +642,15 @@ def detect_scenes(ffmpeg: str, info: VideoInfo, threshold: float,
         cmd += ["-ss", f"{max(0.0, t0):.6f}"]
     if dur is not None:
         cmd += ["-t", f"{max(0.0, dur):.6f}"]
+    # [b]는 모든 프레임을 흘려보내 진행률(frame=)을 세고, [a]에서 장면 전환만 showinfo로 남긴다
     cmd += ["-i", str(info.path), "-an", "-sn", "-dn",
-            "-vf", f"select='gt(scene,{threshold})',showinfo", "-f", "null", "-"]
-    cp = _run(cmd)
+            "-filter_complex", f"[0:v]split[a][b];[a]select='gt(scene,{threshold})',showinfo[o1]",
+            "-map", "[b]", "-f", "null", "-", "-map", "[o1]", "-f", "null", "-"]
+    fps_f = float(info.fps)
+    total = int(round((dur if dur is not None else info.duration) * fps_f)) if dur is not None else info.nb_frames
+    if t0 is not None:
+        total = min(total, max(1, info.nb_frames - int(round(max(0.0, t0) * fps_f))))
+    cp = _run_ffmpeg_progress(cmd, "장면 검출", max(1, total), fps_f)
     if cp.returncode != 0:
         raise RuntimeError(f"장면 검출 실패: {info.path}\n{cp.stderr.strip()[-800:]}")
     base = max(0.0, t0) if t0 is not None else 0.0
@@ -845,7 +923,7 @@ def run_cut(ffmpeg: str, p: CutPlan, codec: str, start_frames: int, frame_start:
             cmd += ["-timecode", str(in_tc)]
         cmd += ["-map_metadata", "-1", "-metadata", f"comment=cgcut {p.shot.sheet} no.{p.shot.no} TC {p.shot.tc_raw.replace(chr(10), ' ')}"]
         cmd += [str(p.out_path)]
-    cp = _run(cmd)
+    cp = _run_ffmpeg_progress(cmd, "자르기", n, fps, by_time=(codec == "copy"))
     if cp.returncode != 0:
         raise RuntimeError(cp.stderr.strip()[-600:] or f"ffmpeg 종료코드 {cp.returncode}")
 
@@ -1158,6 +1236,7 @@ def run(args, cancel=None) -> int:
 
     for vpath, vshots in by_video.items():
         log(f"\n영상: {vpath}")
+        report("준비", 0, 1, f"영상 정보 읽는 중: {vpath.name}")
         try:
             info = infos.get(vpath) or probe(ffprobe, vpath)
         except RuntimeError as e:
@@ -1217,6 +1296,7 @@ def run(args, cancel=None) -> int:
             log(f"[{i}/{len(todo)}] {p.out_path.name} — 이미 있음, 건너뜀")
             continue
         log(f"[{i}/{len(todo)}] {p.out_path.name} ({p.n_frames}f, {p.n_frames / float(p.video.fps):.1f}s) …")
+        report("전체", i - 1, len(todo), f"{i}/{len(todo)}번째 컷 · {p.out_path.name}")
         try:
             run_cut(ffmpeg, p, args.codec, start_map[p.video.path], args.frame_start, args.no_audio)
             p.status = "완료"
@@ -1225,6 +1305,7 @@ def run(args, cancel=None) -> int:
             p.status, p.note = "실패", p.note + str(e).replace("\n", " ")[:200]
             warn(f"{p.out_path.name}: {e}")
             rc = 1
+    report("전체", len(todo), max(1, len(todo)), "끝")
     rep = out_dir / "cgcut_report.csv"
     write_report(rep, plans, start_map)
     log(f"\n완료 {done}개, {time.time() - t0:.0f}초. 출력: {out_dir.resolve()}\n보고서: {rep}")

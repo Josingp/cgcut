@@ -43,6 +43,7 @@ def main() -> int:
     log = app.log.get("1.0", "end")
     print(log)
     assert app.status_var.get() == "완료", app.status_var.get()
+    assert app.total_pct.get() == 100 and "2/2" in app.total_txt.get(), app.total_txt.get()
     outs = sorted(p.name for p in (work / "out_tc").glob("*.mp4"))
     assert outs == ["EP01_TC_01_01-00-02-00.mp4", "EP01_TC_창문_01-00-08-08.mp4"], outs
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import queue
+import time
 import subprocess
 import sys
 import threading
@@ -122,11 +123,29 @@ class App(tk.Tk):
         self.status_var = tk.StringVar(value="")
         ttk.Label(run, textvariable=self.status_var).pack(side="left", padx=10)
 
-        self.log = tk.Text(root, height=14, font=("Consolas", 10), state="disabled", wrap="none")
-        self.log.grid(row=9, column=0, columnspan=3, sticky="nsew", padx=10, pady=(0, 6))
-        root.rowconfigure(9, weight=1)
+        # 상태창
+        st = ttk.LabelFrame(root, text="진행 상황", padding=(10, 6))
+        st.grid(row=9, column=0, columnspan=3, sticky="ew", padx=10, pady=(4, 6))
+        st.columnconfigure(1, weight=1)
+        self.total_pct = tk.DoubleVar(value=0)
+        self.cur_pct = tk.DoubleVar(value=0)
+        self.total_txt = tk.StringVar(value="대기 중")
+        self.cur_txt = tk.StringVar(value="")
+        self.stage_txt = tk.StringVar(value="")
+        ttk.Label(st, text="전체", width=10).grid(row=0, column=0, sticky="w")
+        ttk.Progressbar(st, variable=self.total_pct, maximum=100, length=200).grid(row=0, column=1, sticky="ew", padx=6)
+        ttk.Label(st, textvariable=self.total_txt, width=46, anchor="w").grid(row=0, column=2, sticky="w")
+        ttk.Label(st, textvariable=self.stage_txt, width=10).grid(row=1, column=0, sticky="w", pady=(4, 0))
+        ttk.Progressbar(st, variable=self.cur_pct, maximum=100, length=200).grid(row=1, column=1, sticky="ew", padx=6, pady=(4, 0))
+        ttk.Label(st, textvariable=self.cur_txt, width=46, anchor="w").grid(row=1, column=2, sticky="w", pady=(4, 0))
+        self.elapsed_txt = tk.StringVar(value="")
+        ttk.Label(st, textvariable=self.elapsed_txt, foreground="#666").grid(row=2, column=0, columnspan=3, sticky="w", pady=(4, 0))
+
+        self.log = tk.Text(root, height=10, font=("Consolas", 10), state="disabled", wrap="none")
+        self.log.grid(row=10, column=0, columnspan=3, sticky="nsew", padx=10, pady=(0, 6))
+        root.rowconfigure(10, weight=1)
         sb = ttk.Scrollbar(root, command=self.log.yview)
-        sb.grid(row=9, column=3, sticky="ns")
+        sb.grid(row=10, column=3, sticky="ns")
         self.log.configure(yscrollcommand=sb.set)
         self._mode()
 
@@ -237,7 +256,16 @@ class App(tk.Tk):
         self.run_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
         self.status_var.set("작업 중…")
+        self.t_start = time.time()
+        self.n_total = 0
+        self.n_done = 0
+        self.total_pct.set(0)
+        self.cur_pct.set(0)
+        self.total_txt.set("준비 중…")
+        self.cur_txt.set("")
+        self.stage_txt.set("")
         cgcut.LOG_HOOK = self.q.put
+        cgcut.PROGRESS_HOOK = lambda stage, done, total, detail: self.q.put(("__PROG__", stage, done, total, detail))
         self.worker = threading.Thread(target=self._work, args=(argv,), daemon=True)
         self.worker.start()
 
@@ -263,11 +291,21 @@ class App(tk.Tk):
         try:
             while True:
                 m = self.q.get_nowait()
+                if isinstance(m, tuple):
+                    self._progress(*m[1:])
+                    continue
                 if m.startswith("__DONE__"):
                     rc = int(m[8:])
                     self.run_btn.configure(state="normal")
                     self.stop_btn.configure(state="disabled")
                     self.status_var.set({0: "완료", 3: "중단됨"}.get(rc, "오류 — 아래 내용을 확인하세요"))
+                    cgcut.PROGRESS_HOOK = None
+                    if rc == 0:
+                        self.total_pct.set(100)
+                        self.total_txt.set(f"100.0%  ({self.n_total}/{self.n_total} 컷 완료)")
+                        self.cur_pct.set(100)
+                    self.stage_txt.set("")
+                    self.cur_txt.set("")
                     if rc == 0:
                         self.open_out()
                 else:
@@ -275,6 +313,25 @@ class App(tk.Tk):
         except queue.Empty:
             pass
         self.after(100, self._pump)
+
+    def _progress(self, stage: str, done: float, total: float, detail: str):
+        pct = 100.0 * done / total if total else 0.0
+        if stage == "전체":
+            self.n_total, self.n_done = int(total), int(done)
+            self.total_pct.set(pct)
+            self.total_txt.set(f"{pct:5.1f}%  ({self.n_done}/{self.n_total} 컷 완료)  {detail}")
+            self.cur_pct.set(0)
+            self.cur_txt.set("")
+        else:
+            self.stage_txt.set(stage)
+            self.cur_pct.set(pct)
+            self.cur_txt.set(f"{pct:5.1f}%  {detail}")
+            if stage == "자르기" and self.n_total:
+                overall = 100.0 * (self.n_done + done / total) / self.n_total if total else 0
+                self.total_pct.set(overall)
+                self.total_txt.set(f"{overall:5.2f}%  ({self.n_done}/{self.n_total} 컷 완료, {self.n_done + 1}번째 진행 중)")
+        el = time.time() - getattr(self, "t_start", time.time())
+        self.elapsed_txt.set(f"경과 {int(el // 60)}분 {int(el % 60):02d}초 · 진행률이 멈춰 있어도 화면이 반응하면 작업 중입니다")
 
     def _log(self, s: str):
         self.log.configure(state="normal")
